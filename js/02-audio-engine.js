@@ -60,15 +60,38 @@ function makeStage(ctx){
   };
 }
 
+/* Shared on/off edge-detector for the simple stages (drive/amp/cab/rev) whose
+   processing chain is a fixed, always-built set of nodes — only the bypass
+   crossfade needs to run, and only on an actual off<->on transition (calling
+   activate()/straight() again on every set() would just re-trigger pointless
+   setTargetAtTime ramps). Stages with a dynamically rebuilt graph (mod, delay)
+   have their own on/off + teardown logic and don't use this. */
+function gateStage(w,on,entry,exit){
+  if(w._routed===on)return;
+  w._routed=on;
+  on?w.activate(entry,exit):w.straight();
+}
+
+/* Quantizes a continuous control value to a cache-key step, so an expensive
+   Float32Array waveshaper curve gets rebuilt only when the knob has moved far
+   enough to actually sound different — not on every animation-frame tick while
+   dragging. */
+const quantize=(v,step)=>Math.round(v/step)*step;
+
+/* hp: input highpass corner (Hz)
+   ls: low shelf {f,g} · th: "throat" peak {f,g,q} · gr: grit peak {f,g,q}
+   dz: fizz-cut peak {f,g,q} (usually negative g — notches out speaker fizz)
+   tl: top shelf {f,g} · lp: final lowpass corner (Hz), cascaded through two
+       matched sections below for a steeper rolloff than one biquad gives */
 const CAPROF={
-  '4X12 VINT 30':{hp:90, ls:[90,1.5],  th:[105,2.5,.8], gr:[850,2.0,.9], dz:[2800,-2.0,1.1], tl:[3200,-1.0], lp:5400},
-  '4X12 MODERN': {hp:110,ls:[95,1.0],  th:[120,3.0,1.0],gr:[950,2.5,.9], dz:[3100,-3.0,1.2], tl:[3600,-2.0], lp:4700},
-  '2X12 PLEXI':  {hp:100,ls:[100,1.0], th:[115,2.0,.8], gr:[800,1.5,.8], dz:[2600,-1.5,1.0], tl:[3000,-.5],  lp:5800},
-  '1X12 ALNICO': {hp:105,ls:[105,.5],  th:[125,3.5,.7], gr:[1050,2.2,.8],dz:[3300,-1.2,.9],  tl:[4000,.5],   lp:6800},
-  '2X10 TWEED':  {hp:80, ls:[95,2.0],  th:[110,2.0,.8], gr:[700,1.5,.8], dz:[2400,-.8,.9],   tl:[2800,.8],   lp:6200},
-  'OPEN 1X12':   {hp:95, ls:[110,.5],  th:[130,2.0,.7], gr:[1150,1.8,.8],dz:[3500,-1.5,.9],  tl:[4200,0],    lp:7000},
-  'DARK 2X12':   {hp:80, ls:[90,1.5],  th:[100,2.0,.8], gr:[600,1.0,.8], dz:[2200,-2.5,1.0], tl:[2600,-2.0], lp:4300},
-  'FLAT FRFR':   {hp:35, ls:[80,0],    th:[90,0,.7],    gr:[800,0,.8],   dz:[3000,0,1],      tl:[4000,0],    lp:16000}
+  '4X12 VINT 30':{hp:90, ls:{f:90, g:1.5},      th:{f:105, g:2.5,q:.8},gr:{f:850, g:2.0,q:.9},dz:{f:2800,g:-2.0,q:1.1},tl:{f:3200,g:-1.0},lp:5400},
+  '4X12 MODERN': {hp:110,ls:{f:95, g:1.0},      th:{f:120, g:3.0,q:1.0},gr:{f:950, g:2.5,q:.9},dz:{f:3100,g:-3.0,q:1.2},tl:{f:3600,g:-2.0},lp:4700},
+  '2X12 PLEXI':  {hp:100,ls:{f:100,g:1.0},      th:{f:115, g:2.0,q:.8}, gr:{f:800, g:1.5,q:.8},dz:{f:2600,g:-1.5,q:1.0},tl:{f:3000,g:-.5}, lp:5800},
+  '1X12 ALNICO': {hp:105,ls:{f:105,g:.5},       th:{f:125, g:3.5,q:.7}, gr:{f:1050,g:2.2,q:.8},dz:{f:3300,g:-1.2,q:.9}, tl:{f:4000,g:.5},  lp:6800},
+  '2X10 TWEED':  {hp:80, ls:{f:95, g:2.0},      th:{f:110, g:2.0,q:.8}, gr:{f:700, g:1.5,q:.8},dz:{f:2400,g:-.8, q:.9}, tl:{f:2800,g:.8},  lp:6200},
+  'OPEN 1X12':   {hp:95, ls:{f:110,g:.5},       th:{f:130, g:2.0,q:.7}, gr:{f:1150,g:1.8,q:.8},dz:{f:3500,g:-1.5,q:.9}, tl:{f:4200,g:0},   lp:7000},
+  'DARK 2X12':   {hp:80, ls:{f:90, g:1.5},      th:{f:100, g:2.0,q:.8}, gr:{f:600, g:1.0,q:.8},dz:{f:2200,g:-2.5,q:1.0},tl:{f:2600,g:-2.0},lp:4300},
+  'FLAT FRFR':   {hp:35, ls:{f:80, g:0},        th:{f:90,  g:0,  q:.7}, gr:{f:800, g:0,  q:.8},dz:{f:3000,g:0,  q:1},  tl:{f:4000,g:0},   lp:16000}
 };
 
 const ENG={
@@ -198,7 +221,7 @@ const ENG={
     hp.connect(sh);sh.connect(dc);dc.connect(lp);lp.connect(mk);
     const KIND={'SCREAMER':{kg:1.8,asym:.22,hpL:300},'BLUES DRV':{kg:1.25,asym:.1,hpL:180},
       'RAZOR':{kg:2.6,asym:0,hpL:150},'DIST+':{kg:2.2,asym:.06,hpL:120},'FUZZ':{kg:2.9,asym:.16,hpL:220,fz:true}};
-    let cache='',routed='';
+    let cache='';
     function curve(kind,d10){
       const K=KIND[kind]||KIND.SCREAMER,N=2048,arr=new Float32Array(N);
       const GG=Math.max(1,K.kg*.8);let mx=0;
@@ -219,14 +242,17 @@ const ENG={
     return {
       in:w.in,out:w.out,
       set(st){
-        const rk=String(st.on);
-        if(routed!==rk){routed=rk;st.on?w.activate(hp,mk):w.straight();}
+        gateStage(w,!!st.on,hp,mk);
         if(!st.on)return;
         const K=KIND[st.type]||KIND.SCREAMER;
         hp.frequency.setTargetAtTime(K.hpL*.6,c.currentTime,.02);
         lp.frequency.setTargetAtTime(clamp(500*Math.pow(Math.max(.05,st.tone/10),1.9)*9,300,11000),c.currentTime,.02);
-        const ck=st.type+'|'+st.drv.toFixed(2);
+        const ck=st.type+'|'+quantize(st.drv,.05);
         if(ck!==cache){cache=ck;sh.curve=curve(st.type,st.drv);}
+        /* loudness match: harder clipping (higher DRIVE) raises the curve's average
+           level, so scale makeup gain back down as DRIVE climbs — keeps perceived
+           volume roughly constant while sweeping the knob, per DEFS.drive's promise
+           of a "loudness-normalized" DRIVE control. */
         mk.gain.setTargetAtTime(db2g(st.lvl)*1.15/(0.78+st.drv*.07),c.currentTime,.02);
       }
     };
@@ -255,15 +281,22 @@ const ENG={
     tT.connect(sh1);sh1.connect(s1lp);s1lp.connect(s2dc);s2dc.connect(sh2);
     sh2.connect(deep);deep.connect(pres);pres.connect(lpF);
     lpF.connect(mkup);mkup.connect(sc);
+    /* hp:      input highpass corner (Hz)
+       hs:      voicing highshelf {f,g} — TREBLE knob adds to hs.g on top
+       pk:      voicing peaking filter {f,g,q} — the amp's character notch/bump
+       k:       waveshaper drive-curve intensity at GAIN=10 (bigger = more clip)
+       dark:    post-clip lowpass endpoints {bright,dark} (Hz) — lerped by how far
+                GAIN has pushed the curve, so the tone darkens as gain climbs
+       deep:    low-shelf boost (dB) added to the power-stage low end as gain climbs */
     const VOICE={
-      'TWEED DLX':  {hp:60, hs:[1500,1.2],pk:[900,1,.7],  k:14, dark:[5200,3000], deep:0},
-      'BLACKFACE':  {hp:70, hs:[1500,.4], pk:[700,.6,.7], k:6,  dark:[6000,3600], deep:0},
-      'AC CHIME':   {hp:95, hs:[2200,1],  pk:[2600,1.4,.8],k:8, dark:[7200,4200], deep:0},
-      'BLUES 30':   {hp:85, hs:[1800,.8], pk:[750,1.6,.9],k:11, dark:[6400,3800], deep:0},
-      'PLEXI 100':  {hp:100,hs:[1300,.6], pk:[700,1,.8],  k:22, dark:[5200,2400], deep:1.5},
-      'ROAR 800':   {hp:120,hs:[1300,.4], pk:[680,.8,.8], k:32, dark:[4800,2200], deep:1.5},
-      'RECTO MODERN':{hp:135,hs:[1100,0], pk:[550,0,.8],  k:48, dark:[4200,1700], deep:2.5},
-      'SLO LEAD':   {hp:110,hs:[1200,.6], pk:[620,1.8,.9],k:40, dark:[5000,2100], deep:1.5}
+      'TWEED DLX':   {hp:60, hs:{f:1500,g:1.2}, pk:{f:900, g:1,  q:.7}, k:14, dark:{bright:5200,dark:3000}, deep:0},
+      'BLACKFACE':   {hp:70, hs:{f:1500,g:.4},  pk:{f:700, g:.6, q:.7}, k:6,  dark:{bright:6000,dark:3600}, deep:0},
+      'AC CHIME':    {hp:95, hs:{f:2200,g:1},   pk:{f:2600,g:1.4,q:.8}, k:8,  dark:{bright:7200,dark:4200}, deep:0},
+      'BLUES 30':    {hp:85, hs:{f:1800,g:.8},  pk:{f:750, g:1.6,q:.9}, k:11, dark:{bright:6400,dark:3800}, deep:0},
+      'PLEXI 100':   {hp:100,hs:{f:1300,g:.6},  pk:{f:700, g:1,  q:.8}, k:22, dark:{bright:5200,dark:2400}, deep:1.5},
+      'ROAR 800':    {hp:120,hs:{f:1300,g:.4},  pk:{f:680, g:.8, q:.8}, k:32, dark:{bright:4800,dark:2200}, deep:1.5},
+      'RECTO MODERN':{hp:135,hs:{f:1100,g:0},   pk:{f:550, g:0,  q:.8}, k:48, dark:{bright:4200,dark:1700}, deep:2.5},
+      'SLO LEAD':    {hp:110,hs:{f:1200,g:.6},  pk:{f:620, g:1.8,q:.9}, k:40, dark:{bright:5000,dark:2100}, deep:1.5}
     };
     function curve1(k){
       const N=1024,a=new Float32Array(N),nrm=Math.tanh(k);
@@ -283,26 +316,28 @@ const ENG={
       for(let i=0;i<N;i++)a[i]-=mean;
       return a;
     }
-    let routed='',kc='';
+    let kc='';
     return {
       in:w.in,out:w.out,
       set(st){
-        const rk=String(st.on);
-        if(routed!==rk){routed=rk;st.on?w.activate(vhp,sc):w.straight();}
+        gateStage(w,!!st.on,vhp,sc);
         if(!st.on)return;
         const t=c.currentTime,V=VOICE[st.type]||VOICE['TWEED DLX'];
         vhp.frequency.setTargetAtTime(V.hp,t,.02);
-        vsh.frequency.value=V.hs[0];vsh.gain.setTargetAtTime(V.hs[1]+st.treble*.08,t,.02);
-        vpk.frequency.value=V.pk[0];vpk.gain.setTargetAtTime(V.pk[1],t,.02);vpk.Q.value=V.pk[2];
+        vsh.frequency.value=V.hs.f;vsh.gain.setTargetAtTime(V.hs.g+st.treble*.08,t,.02);
+        vpk.frequency.value=V.pk.f;vpk.gain.setTargetAtTime(V.pk.g,t,.02);vpk.Q.value=V.pk.q;
         tB.gain.setTargetAtTime(st.bass,t,.02);
         tM.gain.setTargetAtTime(st.mid,t,.02);
         tT.gain.setTargetAtTime(st.treble*.65,t,.02);
         const kk=V.k*(0.35+st.gain*0.32);
-        const key=Math.round(kk*2)/2;
+        const key=quantize(kk,.5);
         if(key!==kc){kc=key;sh1.curve=curve1(kk);sh2.curve=curve2(kk);}
+        /* frac: 0 at GAIN's lowest reach (.35×k), 1 at GAIN=10 (k) — drives the
+           adaptive darkening described in DEFS.amp: as gain climbs, both the
+           post-clip lowpass and the power-stage low end move with it. */
         const frac=clamp((kk-V.k*.35)/(V.k*.65),0,1);
-        s1lp.frequency.setTargetAtTime(lerp(V.dark[0],V.dark[1],frac),t,.05);
-        lpF.frequency.setTargetAtTime(lerp(Math.min(V.dark[0]+900,7200),4500,frac),t,.05);
+        s1lp.frequency.setTargetAtTime(lerp(V.dark.bright,V.dark.dark,frac),t,.05);
+        lpF.frequency.setTargetAtTime(lerp(Math.min(V.dark.bright+900,7200),4500,frac),t,.05);
         deep.gain.setTargetAtTime(V.deep*(0.7+frac*.6),t,.05);
         pres.gain.setTargetAtTime(st.pres,t,.03);
         sc.threshold.setTargetAtTime(clamp(-30-kk*.5,-58,-18),t,.05);
@@ -329,28 +364,27 @@ const ENG={
     lcf.connect(hpB);hpB.connect(ls);ls.connect(thPk);thPk.connect(grPk);
     grPk.connect(dzPk);dzPk.connect(tl);tl.connect(lpA);lpA.connect(lpB);
     lpB.connect(hcf);hcf.connect(g);
-    let routed='',profKey='';
+    let profKey='';
     return {
       in:w.in,out:w.out,
       set(st){
-        const rk=String(st.on);
-        if(routed!==rk){routed=rk;st.on?w.activate(lcf,g):w.straight();}
+        gateStage(w,!!st.on,lcf,g);
         if(!st.on)return;
         const t=c.currentTime,P=CAPROF[st.type]||CAPROF['FLAT FRFR'];
         if(profKey!==st.type){
           profKey=st.type;
           hpB.frequency.setTargetAtTime(P.hp,t,.04);
-          ls.frequency.value=P.ls[0];ls.gain.setTargetAtTime(P.ls[1],t,.04);
-          thPk.frequency.value=P.th[0];thPk.gain.setTargetAtTime(P.th[1],t,.04);thPk.Q.value=P.th[2];
-          grPk.frequency.value=P.gr[0];grPk.gain.setTargetAtTime(P.gr[1],t,.04);grPk.Q.value=P.gr[2];
-          dzPk.frequency.value=P.dz[0];dzPk.gain.setTargetAtTime(P.dz[1],t,.04);dzPk.Q.value=P.dz[2];
-          tl.frequency.value=P.tl[0];tl.gain.setTargetAtTime(P.tl[1],t,.04);
+          ls.frequency.value=P.ls.f;ls.gain.setTargetAtTime(P.ls.g,t,.04);
+          thPk.frequency.value=P.th.f;thPk.gain.setTargetAtTime(P.th.g,t,.04);thPk.Q.value=P.th.q;
+          grPk.frequency.value=P.gr.f;grPk.gain.setTargetAtTime(P.gr.g,t,.04);grPk.Q.value=P.gr.q;
+          dzPk.frequency.value=P.dz.f;dzPk.gain.setTargetAtTime(P.dz.g,t,.04);dzPk.Q.value=P.dz.q;
+          tl.frequency.value=P.tl.f;tl.gain.setTargetAtTime(P.tl.g,t,.04);
           lpA.frequency.setTargetAtTime(P.lp,t,.04);
-          lpB.frequency.setTargetAtTime(P.lp,t,.04);
+          lpB.frequency.setTargetAtTime(P.lp,t,.04);   // matched pair — see comment above CAPROF
         }
         lcf.frequency.setTargetAtTime(st.cut,t,.02);
         hcf.frequency.setTargetAtTime(st.hicut,t,.02);
-        g.gain.setTargetAtTime(db2g(st.lvl)*1.25,t,.02);
+        g.gain.setTargetAtTime(db2g(st.lvl)*1.25,t,.02);   // makeup gain: compensates the filter network's insertion loss above
       }
     };
   },
@@ -372,6 +406,11 @@ const ENG={
       xin.disconnect();
       wetBus.gain.cancelScheduledValues(c.currentTime);
     }
+    /* One sine oscillator per voice, phase-shifted with a DelayNode instead of a
+       second oscillator: delaying a sinusoid by (phaseFrac × period) is exactly
+       equivalent to a phaseFrac×360° phase shift, so a plain audio-rate delay
+       gives an exact phase-offset LFO for free. `coef` scales the ±1 sine into
+       the units the destination AudioParam expects (seconds, Hz, gain, ...). */
     function lfo(rate,phaseFrac,coef,nodes,lfd){
       const o=c.createOscillator();o.type='sine';o.frequency.value=rate;
       const sh=c.createDelay(10);sh.delayTime.value=Math.min(9,(phaseFrac||0)/Math.max(.05,rate));
@@ -441,6 +480,11 @@ const ENG={
           const amDepth=c.createGain();amDepth.gain.value=.3;nodes.push(amDepth);
           lg.connect(amDepth);amDepth.connect(amGain.gain);
           if(c.createConstantSource){
+            /* recenters the AM around .7 instead of a GainNode's default 1, so the
+               LFO (amDepth, below) has headroom to swing symmetrically without
+               clipping against the 1.0 ceiling. Without ConstantSourceNode support
+               this degrades gracefully to a 1.0 center — a slightly less pronounced
+               rotary AM, but never broken. */
             const cs=c.createConstantSource();cs.offset.value=.7;
             cs.connect(amGain.gain);cs.start();
             oscRefs.push(cs);nodes.push(cs);
@@ -570,20 +614,24 @@ const ENG={
     const tl=c.createBiquadFilter();tl.type='lowpass';tl.Q.value=.71;
     const wg=c.createGain();
     pre.connect(cv);cv.connect(tl);tl.connect(wg);
-    let pend=null,routed='';
+    let pend=null,lastIrKey='';
     return {
       in:w.in,out:w.out,
       set(st){
-        const rk=String(st.on),t=c.currentTime;
-        if(routed!==rk){routed=rk;st.on?w.activate(pre,wg):w.straight();}
+        const t=c.currentTime;
+        gateStage(w,!!st.on,pre,wg);
         if(!st.on)return;
         pre.delayTime.setTargetAtTime(clamp(st.pre/1000,0,.29),t,.02);
         tl.frequency.setTargetAtTime(lerp(2400,15500,st.tone/10),t,.02);
         wg.gain.setTargetAtTime(st.mix/100*.7,t,.02);
+        /* IR synthesis (getRevIR, below) is the expensive part — up to 10s of
+           stereo noise-shaped audio — so debounce it: only resynthesize once
+           DECAY/TONE/type have settled for 140ms, not on every drag tick. */
         clearTimeout(pend);
         pend=setTimeout(()=>{
           const k=st.type+'|'+st.dec.toFixed(2)+'|'+st.tone.toFixed(1);
-          if(this._rk===k)return;this._rk=k;
+          if(lastIrKey===k)return;
+          lastIrKey=k;
           cv.buffer=ENG.getRevIR(st.type,st.dec,st.tone);
         },140);
       }
