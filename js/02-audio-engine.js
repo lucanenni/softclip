@@ -426,31 +426,33 @@ const ENG={
       graph={nodes,oscs:oscRefs,tremCarrier:null,type:T};
       const pan=v=>{const p=c.createStereoPanner();p.pan.value=v;nodes.push(p);return p;};
       const toWet=n=>n.connect(wetBus);
+      /* straight (unmodulated) signal blended into the wet bus alongside the
+         modulated path — what actually makes chorus/flanger/phaser/rotary sound
+         like a mix rather than a fully wet, only-moving signal. Skipped by
+         VIBRATO (pure pitch modulation, no dry reference) and TREMOLO (its
+         "dry" IS the modulated path — see graph.tremCarrier below). */
+      const dryBlend=gain=>{const dry=c.createGain();dry.gain.value=gain;nodes.push(dry);xin.connect(dry);dry.connect(wetBus);};
 
       if(T==='CHORUS'||T==='VIBRATO'){
         [[0,-.6],[.25,.6]].forEach(pair=>{
           const dl=c.createDelay(.2);dl.delayTime.value=.012;nodes.push(dl);
-          const lg=lfo(R,pair[0],.0076,nodes,oscRefs);lg.connect(dl.delayTime);
+          const lg=lfo(R,pair[0],.0076,nodes,oscRefs);lg.connect(dl.delayTime);  // .0076: seconds of delay-time swing
           const p=pan(pair[1]);
           xin.connect(dl);dl.connect(p);toWet(p);
         });
-        if(T==='CHORUS'){
-          const dry=c.createGain();dry.gain.value=1;nodes.push(dry);
-          xin.connect(dry);dry.connect(wetBus);
-        }
+        if(T==='CHORUS')dryBlend(1);
       }
       else if(T==='FLANGER'){
         const dl=c.createDelay(.1);dl.delayTime.value=.0045;nodes.push(dl);
-        const lg=lfo(R,0,.0032,nodes,oscRefs);lg.connect(dl.delayTime);
+        const lg=lfo(R,0,.0032,nodes,oscRefs);lg.connect(dl.delayTime);  // .0032: seconds of delay-time swing
         const fb=c.createGain();fb.gain.value=.5;nodes.push(fb);
         const p=pan(.15);
         xin.connect(dl);dl.connect(fb);fb.connect(dl);
         dl.connect(p);toWet(p);
-        const dry=c.createGain();dry.gain.value=1;nodes.push(dry);
-        xin.connect(dry);dry.connect(wetBus);
+        dryBlend(1);
       }
       else if(T==='PHASER'){
-        const lg=lfo(R,0,520,nodes,oscRefs);
+        const lg=lfo(R,0,520,nodes,oscRefs);  // 520: Hz of allpass center-frequency swing
         let node=xin;
         for(let i=0;i<4;i++){
           const ap=c.createBiquadFilter();ap.type='allpass';
@@ -459,14 +461,14 @@ const ENG={
           nodes.push(ap);node=ap;
         }
         const p=pan(0);node.connect(p);toWet(p);
-        const dry=c.createGain();dry.gain.value=1;nodes.push(dry);
-        xin.connect(dry);dry.connect(wetBus);
+        dryBlend(1);
       }
       else if(T==='TREMOLO'){
         const carrier=c.createGain();carrier.gain.value=1;nodes.push(carrier);
-        graph.tremCarrier=carrier;
+        graph.tremCarrier=carrier;   // special-cased below in set(): its floor (how deep the
+                                      // chop goes) isn't a plain coef×depth like the other nodes
         const ampGain=c.createGain();nodes.push(ampGain);
-        const lg=lfo(R,0,1,nodes,oscRefs);
+        const lg=lfo(R,0,1,nodes,oscRefs);  // 1: unitless — modulates a 0..1 gain multiplier directly
         ampGain.gain.value=0;
         lg.connect(ampGain);ampGain.connect(carrier.gain);
         const p=pan(0);
@@ -475,7 +477,7 @@ const ENG={
       else if(T==='ROTARY'){
         [[0,-.7],[.5,.7]].forEach(pair=>{
           const dl=c.createDelay(.2);dl.delayTime.value=.014;nodes.push(dl);
-          const lg=lfo(R,pair[0],.0045,nodes,oscRefs);lg.connect(dl.delayTime);
+          const lg=lfo(R,pair[0],.0045,nodes,oscRefs);lg.connect(dl.delayTime);  // .0045: seconds of delay-time swing
           const amGain=c.createGain();amGain.gain.value=.7;nodes.push(amGain);
           const amDepth=c.createGain();amDepth.gain.value=.3;nodes.push(amDepth);
           lg.connect(amDepth);amDepth.connect(amGain.gain);
@@ -492,8 +494,7 @@ const ENG={
           const p=pan(pair[1]);
           xin.connect(dl);dl.connect(amGain);amGain.connect(p);toWet(p);
         });
-        const dry=c.createGain();dry.gain.value=.85;nodes.push(dry);
-        xin.connect(dry);dry.connect(wetBus);
+        dryBlend(.85);
       }
 
       if(st.on)w.activate(xin,wetBus);
@@ -551,6 +552,7 @@ const ENG={
       const sat=c.createWaveShaper();sat.oversample='2x';sat.curve=satCurve(dark);
       const fb=c.createGain();
       const nodes=[damp,wet,sat,fb],oscs=[],head=[];
+      let flutterDepth=null;
       xin.connect(damp);
       if(T==='PING-PONG'){
         const dlL=c.createDelay(2),dlR=c.createDelay(2);
@@ -565,20 +567,29 @@ const ENG={
         dlL.connect(pL);dlR.connect(pR);pL.connect(wet);pR.connect(wet);
         head.push(dlL,dlR);nodes.push(dlL,dlR,pL,pR);
       }else{
+        // single delay line, tapped BEFORE the feedback saturator: the first
+        // echo comes back clean (only damp-filtered), later ones recirculate
+        // through `sat` once per repeat and darken/grind progressively —
+        // deliberate, mimics how a real tape/analog echo wears with each pass.
         const dl=c.createDelay(2);dl.delayTime.value=timeOf(st);
         fb.gain.value=clamp(st.fb/100,0,.95)*.88;
         damp.connect(dl);dl.connect(sat);sat.connect(fb);fb.connect(damp);
         dl.connect(wet);
         head.push(dl);nodes.push(dl);
         if(T==='TAPE'){
+          // wow & flutter: a slow oscillator wobbles the delay time itself.
+          // Depth is scaled to the delay time (longer delay = wider wobble in
+          // absolute seconds, same relative pitch wobble) — kept in sync with
+          // TIME/tempo changes via refresh() below, not just set once here.
           const o=c.createOscillator();o.frequency.value=.7;
           const og=c.createGain();og.gain.value=timeOf(st)*.03;
           o.connect(og);og.connect(dl.delayTime);o.start();
           oscs.push(o);nodes.push(og);
+          flutterDepth=og;
         }
       }
       wet.connect(w.out);
-      net={type:T,damp,wet,fb,head,nodes,oscs};
+      net={type:T,damp,wet,fb,head,nodes,oscs,flutterDepth};
       if(st.on)w.activate(xin,wet);
       else w.straight();
       routed=st.on;
@@ -597,6 +608,7 @@ const ENG={
         if(!st.on||!net)return;
         const t=c.currentTime,tv=timeOf(st);
         net.head.forEach(dl=>dl.delayTime.setTargetAtTime(tv,t,.05));
+        if(net.flutterDepth)net.flutterDepth.gain.setTargetAtTime(tv*.03,t,.05);
         net.fb.gain.setTargetAtTime(clamp(st.fb/100,0,.95)*(net.type==='PING-PONG'?.86:.88),t,.02);
         net.wet.gain.setTargetAtTime(st.mix/100*.9,t,.02);
         const dark=net.type==='ANALOG'?2400:net.type==='TAPE'?3000:12000;
