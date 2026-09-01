@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0c0c0e">
+<title>Flyclip · Direct Preamp Rig</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0c0e'/%3E%3Cpath d='M6 24 C13 24 13 8 26 8' stroke='%23FF5A1F' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="top">
+    <div class="brand">
+      <div class="logo">FLY<em>CLIP</em></div>
+      <div class="sub">DIRECT&nbsp;PREAMP&nbsp;RIG</div>
+    </div>
+    <span class="grow"></span>
+    <a class="backlink" href="../">← SOFTCLIP</a>
+    <button class="btn primary" id="engageBtn">● ENGINE OFF</button>
+  </header>
+
+  <div id="main">
+    <section id="sections" aria-label="signal chain sections"></section>
+
+    <aside>
+      <div class="card">
+        <div class="cardtitle">INPUT SOURCE</div>
+        <div class="srcrow">
+          <button class="srcbtn on" data-src="MIC">GUITAR / MIC IN</button>
+          <button class="srcbtn" data-src="RIFF">DEMO RIFF</button>
+          <button class="srcbtn" data-src="FILE">AUDIO FILE…</button>
+        </div>
+        <div class="devrow">
+          <span class="hint">IN:</span>
+          <select class="sel devsel" id="devSel" aria-label="input device"></select>
+        </div>
+        <span id="srcLbl">no signal</span>
+        <div class="pingrow">
+          <button class="jbtn" id="pingBtn">◎ SELF-TEST PING</button>
+          <span class="hint">injects a tone past the input — heard? chain is alive.</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardtitle">INPUT / OUTPUT TRIM</div>
+        <div class="io">
+          <div class="knobrow" id="ioKnobs"></div>
+          <div class="meters">
+            <div class="mlab"><span>INPUT</span><span id="ming">-∞</span></div>
+            <div class="mtrack"><div class="mfill" id="mfin"></div></div>
+            <div class="mlab"><span>OUTPUT</span><span id="mout">-∞</span></div>
+            <div class="mtrack"><div class="mfill hot" id="mfout"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card tuner">
+        <div class="cardtitle">TUNER</div>
+        <div class="tnote"><span id="tnote">—</span><sup id="tnoct"></sup></div>
+        <div class="tfreq" id="tfreq">0.0 Hz</div>
+        <div class="centsbar"><span class="tick"></span><span class="needle" id="tneedle"></span></div>
+        <div class="tverdict" id="tverd">&nbsp;</div>
+        <div class="tunerBtnRow"><button class="jbtn" id="tunerBtn">TUNER ON/OFF</button></div>
+      </div>
+    </aside>
+  </div>
+
+  <footer id="status">
+    <span class="tapled" id="tapled"></span>
+    <span>DRAG KNOBS VERTICALLY · DOUBLE-CLICK RESETS · SHIFT FOR FINE · CLICK VALUE TO TYPE</span>
+    <span class="grow"></span>
+    <span id="st-engine" class="unlit">ENGINE: BYPASS</span>
+    <span>RUNS FULLY LOCAL</span>
+  </footer>
+</div>
+
+<div id="toasts"></div>
+<input type="file" id="filesong" accept="audio/*" hidden>
+
+<script src="js/01-core.js"></script>
+<script src="js/02-audio-engine.js"></script>
+<script src="js/03-source.js"></script>
+<script src="js/04-ui.js"></script>
+<script src="js/05-tuner.js"></script>
+<script src="js/06-main.js"></script>
+</body>
+</html>
